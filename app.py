@@ -21,6 +21,26 @@ if "lat" not in st.session_state:
     st.session_state.lat = 45.4642
 if "lon" not in st.session_state:
     st.session_state.lon = 9.1900
+if "coordinate_lat" not in st.session_state:
+    st.session_state.coordinate_lat = st.session_state.lat
+if "coordinate_lon" not in st.session_state:
+    st.session_state.coordinate_lon = st.session_state.lon
+if "last_map_click" not in st.session_state:
+    st.session_state.last_map_click = None
+
+
+def set_location(lat: float, lon: float):
+    st.session_state.lat = lat
+    st.session_state.lon = lon
+    st.session_state.coordinate_lat = lat
+    st.session_state.coordinate_lon = lon
+
+
+def update_location_from_coordinates():
+    set_location(
+        round(st.session_state.coordinate_lat, 4),
+        round(st.session_state.coordinate_lon, 4),
+    )
 
 
 @st.cache_data(show_spinner="Loading FAO EcoCrop database (2,568 species)...")
@@ -42,10 +62,10 @@ with st.sidebar:
     st.header("1. Quick Demo Regions")
     col_p1, col_p2 = st.columns(2)
     if col_p1.button("🇮🇹 Po Valley"):
-        st.session_state.lat, st.session_state.lon = 45.4642, 9.1900
+        set_location(45.4642, 9.1900)
         st.rerun()
     if col_p2.button("🇺🇸 Iowa Corn Belt"):
-        st.session_state.lat, st.session_state.lon = 41.8781, -93.0977
+        set_location(41.8781, -93.0977)
         st.rerun()
 
     st.header("2. Rotation Horizon")
@@ -92,7 +112,8 @@ with st.sidebar:
         existing_sequence.append(sel)
 
 # --- INTERACTIVE MAP PICKER ---
-st.subheader("📍 Step 1: Click Your Field on the Map")
+st.subheader("📍 Step 1: Choose Your Field Location")
+st.caption("Click the map or enter decimal-degree coordinates.")
 map_col, info_col = st.columns([3, 1])
 
 with map_col:
@@ -124,18 +145,33 @@ with map_col:
     if map_data and map_data.get("last_clicked"):
         clicked_lat = round(map_data["last_clicked"]["lat"], 4)
         clicked_lon = round(map_data["last_clicked"]["lng"], 4)
-        if clicked_lat != st.session_state.lat or clicked_lon != st.session_state.lon:
-            st.session_state.lat = clicked_lat
-            st.session_state.lon = clicked_lon
-            st.rerun()
+        clicked_location = (clicked_lat, clicked_lon)
+        if clicked_location != st.session_state.last_map_click:
+            st.session_state.last_map_click = clicked_location
+            if clicked_lat != st.session_state.lat or clicked_lon != st.session_state.lon:
+                set_location(clicked_lat, clicked_lon)
+                st.rerun()
 
 with info_col:
-    st.info(
-        f"**Selected Field Coordinates**\n\n"
-        f"- **Latitude:** `{st.session_state.lat:.4f}°`\n"
-        f"- **Longitude:** `{st.session_state.lon:.4f}°`\n\n"
-        f"💡 *Tip: Use the layer toggle in the top-right corner of the map to switch to **Satellite View** and click directly on your field.*"
+    st.number_input(
+        "Latitude",
+        min_value=-90.0,
+        max_value=90.0,
+        step=0.0001,
+        format="%.4f",
+        key="coordinate_lat",
+        on_change=update_location_from_coordinates,
     )
+    st.number_input(
+        "Longitude",
+        min_value=-180.0,
+        max_value=180.0,
+        step=0.0001,
+        format="%.4f",
+        key="coordinate_lon",
+        on_change=update_location_from_coordinates,
+    )
+    st.caption("💡 Switch the map to Satellite View to identify your field.")
 
 # --- FETCH TELEMETRY & RESOLVE CROPS ---
 climate_df = load_cached_nasa(st.session_state.lat, st.session_state.lon)
