@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import folium
+from streamlit_folium import st_folium
 from data_fetcher import (
     get_ecocrop_dataframe,
     get_all_common_crop_names,
@@ -13,6 +15,12 @@ from optimizer import generate_three_strategies
 st.set_page_config(page_title="NASA Crop Rotation Advisor", layout="wide")
 st.title("🛰️ Satellite-Guided Crop Rotation Decision Support")
 st.caption("Combining 10-Year NASA POWER Climate & Soil Moisture Telemetry with UN FAO EcoCrop Agronomic Data")
+
+# Initialize persistent coordinates in session state (Default: Po Valley, Italy)
+if "lat" not in st.session_state:
+    st.session_state.lat = 45.4642
+if "lon" not in st.session_state:
+    st.session_state.lon = 9.1900
 
 
 @st.cache_data(show_spinner="Loading FAO EcoCrop database (2,568 species)...")
@@ -29,14 +37,21 @@ def load_cached_nasa(lat: float, lon: float):
 
 ecocrop_df, common_names = load_cached_ecocrop()
 
-# --- SIDEBAR: FARMER INPUTS ---
+# --- SIDEBAR: ROTATION & CROP INPUTS ---
 with st.sidebar:
-    st.header("1. Farm Location & Horizon")
-    lat = st.number_input("Latitude", value=45.4642, format="%.4f", help="Default: Po Valley, Italy")
-    lon = st.number_input("Longitude", value=9.1900, format="%.4f")
-    years = st.slider("Rotation Time Interval (Years)", min_value=1, max_value=3, value=2)
+    st.header("1. Quick Demo Regions")
+    col_p1, col_p2 = st.columns(2)
+    if col_p1.button("🇮🇹 Po Valley"):
+        st.session_state.lat, st.session_state.lon = 45.4642, 9.1900
+        st.rerun()
+    if col_p2.button("🇺🇸 Iowa Corn Belt"):
+        st.session_state.lat, st.session_state.lon = 41.8781, -93.0977
+        st.rerun()
 
-    st.header("2. Select Up to 4 Crops")
+    st.header("2. Rotation Horizon")
+    years = st.slider("Time Interval (Years)", min_value=1, max_value=3, value=2)
+
+    st.header("3. Select Up to 4 Crops")
     st.caption("Choose from 2,500+ FAO EcoCrop species or type a custom crop name.")
     default_crops = ["Maize", "Soybean", "Winter Wheat", "Alfalfa"]
     farmer_crops = []
@@ -58,7 +73,7 @@ with st.sidebar:
         if chosen:
             farmer_crops.append(chosen)
 
-    st.header("3. Existing Seasonal Sequence")
+    st.header("4. Existing Seasonal Sequence")
     slot_options = list(dict.fromkeys(farmer_crops + ["Fallow"]))
     existing_sequence = []
     for s in range(years * 2):
@@ -76,8 +91,54 @@ with st.sidebar:
         )
         existing_sequence.append(sel)
 
+# --- INTERACTIVE MAP PICKER ---
+st.subheader("📍 Step 1: Click Your Field on the Map")
+map_col, info_col = st.columns([3, 1])
+
+with map_col:
+    m = folium.Map(
+        location=[st.session_state.lat, st.session_state.lon],
+        zoom_start=11,
+        tiles="OpenStreetMap"
+    )
+    # Add Satellite Imagery layer so farmers can visually identify their fields
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri World Imagery",
+        name="Satellite View",
+        overlay=False,
+        control=True
+    ).add_to(m)
+    folium.LayerControl().add_to(m)
+
+    # Pin at currently selected coordinates
+    folium.Marker(
+        [st.session_state.lat, st.session_state.lon],
+        popup=f"Selected Field ({st.session_state.lat:.4f}, {st.session_state.lon:.4f})",
+        icon=folium.Icon(color="green", icon="leaf", prefix="fa")
+    ).add_to(m)
+
+    # Render map and capture clicks
+    map_data = st_folium(m, height=350, use_container_width=True, key="field_picker_map")
+
+    if map_data and map_data.get("last_clicked"):
+        clicked_lat = round(map_data["last_clicked"]["lat"], 4)
+        clicked_lon = round(map_data["last_clicked"]["lng"], 4)
+        if clicked_lat != st.session_state.lat or clicked_lon != st.session_state.lon:
+            st.session_state.lat = clicked_lat
+            st.session_state.lon = clicked_lon
+            st.rerun()
+
+with info_col:
+    st.info(
+        f"**Selected Field Coordinates**\n\n"
+        f"- **Latitude:** `{st.session_state.lat:.4f}°`\n"
+        f"- **Longitude:** `{st.session_state.lon:.4f}°`\n\n"
+        f"💡 *Tip: Use the layer toggle in the top-right corner of the map to switch to **Satellite View** and click directly on your field.*"
+    )
+
 # --- FETCH TELEMETRY & RESOLVE CROPS ---
-climate_df = load_cached_nasa(lat, lon)
+climate_df = load_cached_nasa(st.session_state.lat, st.session_state.lon)
 dynamic_crop_db = get_climate_compatible_candidates(climate_df, ecocrop_df, limit=12)
 
 resolved_profiles = []
@@ -89,6 +150,7 @@ for c in set(farmer_crops + existing_sequence):
 strategies = generate_three_strategies(existing_sequence, climate_df, dynamic_crop_db)
 
 # --- TOP KPI METRICS ---
+st.divider()
 water_trend = climate_df["long_term_water_trend"].iloc[0].upper()
 annual_rain = climate_df["precip_mm"].sum()
 peak_heat = climate_df["temp_max"].max()
