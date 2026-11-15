@@ -8,10 +8,13 @@ DEFAULT_WEIGHTS = {key: 25.0 for key in SCORE_KEYS}
 
 
 def normalize_weights(weights: dict[str, float] | None = None) -> dict[str, float]:
-    """Return active evaluation weights normalized to percentages totaling 100."""
+    """Return evaluation weights normalized to percentages totaling 100."""
     source = weights if weights is not None else DEFAULT_WEIGHTS
-    values = {key: max(float(source.get(key, 1.0)), 1.0) for key in SCORE_KEYS}
+    values = {key: max(float(source.get(key, 0.0)), 0.0) for key in SCORE_KEYS}
     total = sum(values.values())
+    if total == 0:
+        values = DEFAULT_WEIGHTS
+        total = sum(values.values())
     normalized = {
         key: round(values[key] / total * 100.0, 1)
         for key in SCORE_KEYS[:-1]

@@ -10,7 +10,7 @@ from data_fetcher import (
     get_climate_compatible_candidates,
     fetch_nasa_climate_profile,
 )
-from optimizer import SCORE_KEYS, generate_three_strategies, normalize_weights
+from optimizer import SCORE_KEYS, generate_three_strategies
 
 st.set_page_config(page_title="NASA Crop Rotation Advisor", layout="wide")
 st.title("🛰️ Satellite-Guided Crop Rotation Decision Support")
@@ -60,15 +60,13 @@ def apply_priority_preset():
             st.session_state[f"priority_weight_{key}"] = weights[key]
 
 
-def normalize_custom_priority_weights():
-    weights = normalize_weights({
+def update_custom_priority_weights():
+    weights = {
         key: st.session_state[f"priority_weight_{key}"]
         for key in SCORE_KEYS
-    })
+    }
     st.session_state.priority_weights = weights
     st.session_state.priority_preset = CUSTOM_PRIORITY
-    for key in SCORE_KEYS:
-        st.session_state[f"priority_weight_{key}"] = weights[key]
 
 
 # Initialize persistent coordinates in session state (Default: Po Valley, Italy)
@@ -283,14 +281,14 @@ with st.expander("Customize", expanded=False):
         with weight_cols[index % 2]:
             st.number_input(
                 PRIORITY_LABELS[key],
-                min_value=1.0,
+                min_value=0.0,
                 max_value=100.0,
                 step=0.1,
                 format="%.1f",
                 key=f"priority_weight_{key}",
-                on_change=normalize_custom_priority_weights,
+                on_change=update_custom_priority_weights,
             )
-    st.caption("Weights are normalized to 100%; every criterion stays active.")
+    st.caption("Values are normalized only when calculating scores. A value of 0 excludes that criterion.")
 
 strategies = generate_three_strategies(
     existing_sequence,
