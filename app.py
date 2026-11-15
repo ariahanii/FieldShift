@@ -10,11 +10,66 @@ from data_fetcher import (
     get_climate_compatible_candidates,
     fetch_nasa_climate_profile,
 )
-from optimizer import generate_three_strategies
+from optimizer import SCORE_KEYS, generate_three_strategies, normalize_weights
 
 st.set_page_config(page_title="NASA Crop Rotation Advisor", layout="wide")
 st.title("🛰️ Satellite-Guided Crop Rotation Decision Support")
 st.caption("Combining 10-Year NASA POWER Climate & Soil Moisture Telemetry with UN FAO EcoCrop Agronomic Data")
+
+PRIORITY_LABELS = {
+    "water_resilience": "Water conservation (%)",
+    "heat_fit": "Heat & climate fit (%)",
+    "soil_health": "Soil health (%)",
+    "pest_break": "Pest-cycle break (%)",
+}
+PRIORITY_PRESETS = {
+    "Balanced": {
+        "water_resilience": 25.0,
+        "heat_fit": 25.0,
+        "soil_health": 25.0,
+        "pest_break": 25.0,
+    },
+    "Water Conservation": {
+        "water_resilience": 50.0,
+        "heat_fit": 15.0,
+        "soil_health": 20.0,
+        "pest_break": 15.0,
+    },
+    "Soil Health": {
+        "water_resilience": 15.0,
+        "heat_fit": 15.0,
+        "soil_health": 55.0,
+        "pest_break": 15.0,
+    },
+    "Climate Resilience": {
+        "water_resilience": 30.0,
+        "heat_fit": 35.0,
+        "soil_health": 15.0,
+        "pest_break": 20.0,
+    },
+}
+CUSTOM_PRIORITY = "Custom"
+
+
+def apply_priority_preset():
+    preset = st.session_state.priority_preset
+    if preset in PRIORITY_PRESETS:
+        weights = PRIORITY_PRESETS[preset]
+        st.session_state.priority_weights = dict(weights)
+        for key in SCORE_KEYS:
+            st.session_state[f"priority_weight_{key}"] = weights[key]
+
+
+def normalize_custom_priority_weights():
+    weights = normalize_weights({
+        key: st.session_state[f"priority_weight_{key}"]
+        for key in SCORE_KEYS
+    })
+    st.session_state.priority_weights = weights
+    st.session_state.priority_preset = CUSTOM_PRIORITY
+    for key in SCORE_KEYS:
+        st.session_state[f"priority_weight_{key}"] = weights[key]
+
 
 # Initialize persistent coordinates in session state (Default: Po Valley, Italy)
 if "lat" not in st.session_state:
@@ -27,6 +82,14 @@ if "coordinate_lon" not in st.session_state:
     st.session_state.coordinate_lon = st.session_state.lon
 if "last_map_click" not in st.session_state:
     st.session_state.last_map_click = None
+if "priority_preset" not in st.session_state:
+    st.session_state.priority_preset = "Balanced"
+if "priority_weights" not in st.session_state:
+    st.session_state.priority_weights = dict(PRIORITY_PRESETS["Balanced"])
+for priority_key in SCORE_KEYS:
+    widget_key = f"priority_weight_{priority_key}"
+    if widget_key not in st.session_state:
+        st.session_state[widget_key] = PRIORITY_PRESETS["Balanced"][priority_key]
 
 
 def set_location(lat: float, lon: float):
@@ -72,7 +135,7 @@ with st.sidebar:
     years = st.slider("Time Interval (Years)", min_value=1, max_value=3, value=2)
 
     st.header("3. Select Up to 4 Crops")
-    st.caption("Choose from 2,500+ FAO EcoCrop species or type a custom crop name.")
+    st.caption("Choose from 2,500+ FAO EcoCrop species.")
     default_crops = ["Maize", "Soybean", "Winter Wheat", "Alfalfa"]
     farmer_crops = []
     for i in range(4):
@@ -82,16 +145,8 @@ with st.sidebar:
             index=(common_names.index(default_crops[i]) + 1) if default_crops[i] in common_names else 0,
             key=f"crop_choice_{i}"
         )
-        custom_override = st.text_input(
-            f"Or type custom name for Crop {i + 1}",
-            value="",
-            key=f"custom_{i}",
-            label_visibility="collapsed",
-            placeholder="Optional custom crop name..."
-        )
-        chosen = custom_override.strip() if custom_override.strip() else crop_input
-        if chosen:
-            farmer_crops.append(chosen)
+        if crop_input:
+            farmer_crops.append(crop_input)
 
     st.header("4. Existing Seasonal Sequence")
     slot_options = list(dict.fromkeys(farmer_crops + ["Fallow"]))
@@ -180,10 +235,8 @@ dynamic_crop_db = get_climate_compatible_candidates(climate_df, ecocrop_df, limi
 resolved_profiles = []
 for c in set(farmer_crops + existing_sequence):
     prof = get_crop_profile_from_ecocrop(c, ecocrop_df)
-    dynamic_crop_db[prof["name"]] = prof
+    dynamic_crop_db[c] = prof
     resolved_profiles.append(prof)
-
-strategies = generate_three_strategies(existing_sequence, climate_df, dynamic_crop_db)
 
 # --- TOP KPI METRICS ---
 st.divider()
@@ -224,6 +277,36 @@ with st.expander("🌿 Resolved Crop Agronomic Profiles (FAO EcoCrop Lookup)", e
         ],
         use_container_width=True
     )
+
+# --- FARMER PRIORITIES ---
+st.selectbox(
+    "Farmer priorities",
+    options=[*PRIORITY_PRESETS, CUSTOM_PRIORITY],
+    key="priority_preset",
+    on_change=apply_priority_preset,
+)
+
+with st.expander("Customize", expanded=False):
+    weight_cols = st.columns(2)
+    for index, key in enumerate(SCORE_KEYS):
+        with weight_cols[index % 2]:
+            st.number_input(
+                PRIORITY_LABELS[key],
+                min_value=1.0,
+                max_value=100.0,
+                step=0.1,
+                format="%.1f",
+                key=f"priority_weight_{key}",
+                on_change=normalize_custom_priority_weights,
+            )
+    st.caption("Weights are normalized to 100%; every criterion stays active.")
+
+strategies = generate_three_strategies(
+    existing_sequence,
+    climate_df,
+    dynamic_crop_db,
+    st.session_state.priority_weights,
+)
 
 # --- 3-STRATEGY COMPARISON CARDS ---
 st.subheader("🌱 Recommended 3-Strategy Rotation Comparison")
