@@ -240,33 +240,6 @@ m2.metric("Peak Summer Max Temp", f"{peak_heat:.1f} °C")
 m3.metric("Summer Root-Zone Moisture", f"{summer_sm:.2f} (0–1)")
 m4.metric("10-Yr Water Storage Trend", water_trend)
 
-# --- TELEMETRY CHARTS ---
-with st.expander("📈 View 10-Year NASA Climate, Moisture & Stress Curves", expanded=True):
-    c1, c2 = st.columns(2)
-    with c1:
-        fig_temp = px.line(
-            climate_df, x="month", y=["temp_max", "temp_avg", "temp_min"],
-            title="Monthly Temperature Envelope (°C)",
-            labels={"value": "Temperature (°C)", "month": "Month"}
-        )
-        st.plotly_chart(fig_temp, use_container_width=True)
-    with c2:
-        fig_water = px.bar(
-            climate_df, x="month", y="precip_mm",
-            title="Monthly Precipitation (mm) & Water Balance",
-            labels={"precip_mm": "Precipitation (mm)", "month": "Month"}
-        )
-        st.plotly_chart(fig_water, use_container_width=True)
-
-# --- RESOLVED ECOCROP PARAMETERS TABLE ---
-with st.expander("🌿 Resolved Crop Agronomic Profiles (FAO EcoCrop Lookup)", expanded=False):
-    st.dataframe(
-        pd.DataFrame(resolved_profiles)[
-            ["name", "scientific_name", "family", "season", "ripening_days", "cycle_water_need_mm", "heat_tolerance_c", "frost_hardy", "source"]
-        ],
-        use_container_width=True
-    )
-
 # --- FARMER PRIORITIES ---
 st.selectbox(
     "Farmer priorities",
@@ -321,8 +294,131 @@ for col, strat in zip(cols, strategies):
         st.success("**Satellite & Agronomic Evidence:**\n" + "\n".join(f"- {e}" for e in strat["evidence"]))
         st.warning("**Local Review & Risk Flags:**\n" + "\n".join(f"- {r}" for r in strat["risks"]))
 
-st.info(
-    "ℹ️ **Human-in-the-Loop Guidance:** Satellite telemetry captures regional climate and moisture patterns, "
-    "while FAO EcoCrop provides species-level thresholds. Always review soil pH, sub-surface drainage, "
-    "equipment compatibility, and local market demand with an agronomist before planting."
+# --- SUPPORTING CLIMATE & CROP DATA ---
+st.markdown("#### Explore supporting data")
+with st.expander("📈 View 10-Year NASA Climate, Moisture & Stress Curves", expanded=True):
+    c1, c2 = st.columns(2)
+    with c1:
+        fig_temp = px.line(
+            climate_df, x="month", y=["temp_max", "temp_avg", "temp_min"],
+            title="Monthly Temperature Envelope (°C)",
+            labels={"value": "Temperature (°C)", "month": "Month"}
+        )
+        st.plotly_chart(fig_temp, use_container_width=True)
+    with c2:
+        fig_water = px.bar(
+            climate_df, x="month", y="precip_mm",
+            title="Monthly Precipitation (mm) & Water Balance",
+            labels={"precip_mm": "Precipitation (mm)", "month": "Month"}
+        )
+        st.plotly_chart(fig_water, use_container_width=True)
+
+with st.expander("🌿 Resolved Crop Agronomic Profiles (FAO EcoCrop Lookup)", expanded=False):
+    st.dataframe(
+        pd.DataFrame(resolved_profiles)[
+            ["name", "scientific_name", "family", "season", "ripening_days", "cycle_water_need_mm", "heat_tolerance_c", "frost_hardy", "source"]
+        ],
+        use_container_width=True
+    )
+
+st.markdown(
+    """
+    <style>
+    .fieldshift-footer {
+        margin-top: 1.1rem;
+        padding-top: 0.9rem;
+        border-top: 1px solid rgba(128, 128, 128, 0.28);
+        color: var(--text-color);
+    }
+    .fieldshift-footer .footer-disclaimer {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.55rem;
+        padding: 0.65rem 0.8rem;
+        border-radius: 0.35rem;
+        background: var(--secondary-background-color);
+        font-size: 0.8rem;
+        line-height: 1.5;
+        opacity: 0.88;
+    }
+    .fieldshift-footer .footer-info-icon {
+        flex: 0 0 auto;
+        opacity: 0.7;
+    }
+    .fieldshift-footer .footer-disclaimer p,
+    .fieldshift-footer .footer-project-name,
+    .fieldshift-footer .footer-credit {
+        margin: 0;
+    }
+    .fieldshift-footer .footer-columns {
+        display: grid;
+        grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.5fr);
+        gap: 1.5rem;
+        margin-top: 0.95rem;
+    }
+    .fieldshift-footer .footer-label {
+        margin: 0 0 0.35rem;
+        font-size: 0.68rem;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        opacity: 0.62;
+    }
+    .fieldshift-footer .footer-project-name {
+        margin-bottom: 0.2rem;
+        font-size: 0.9rem;
+        font-weight: 600;
+    }
+    .fieldshift-footer .footer-credit {
+        font-size: 0.76rem;
+        line-height: 1.45;
+        opacity: 0.72;
+    }
+    .fieldshift-footer .footer-sources {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem 0.45rem;
+    }
+    .fieldshift-footer .footer-source {
+        padding: 0.16rem 0.45rem;
+        border-radius: 0.25rem;
+        background: var(--secondary-background-color);
+        font-size: 0.72rem;
+        line-height: 1.4;
+        opacity: 0.78;
+    }
+    @media (max-width: 640px) {
+        .fieldshift-footer .footer-columns {
+            grid-template-columns: minmax(0, 1fr);
+            gap: 0.8rem;
+        }
+    }
+    </style>
+    <footer class="fieldshift-footer" aria-label="FieldShift disclaimer and credits">
+        <div class="footer-disclaimer">
+            <span class="footer-info-icon" aria-hidden="true">&#9432;</span>
+            <p>FieldShift provides informational decision support, not definitive agricultural recommendations.
+            Its outputs should always be evaluated alongside local conditions and farming practices.
+            Farmers' knowledge, experience, and understanding of their land take priority over the tool's suggestions.</p>
+        </div>
+        <div class="footer-columns">
+            <section>
+                <h2 class="footer-label">Project</h2>
+                <p class="footer-project-name">FieldShift</p>
+                <p class="footer-credit">Developed by Team [Team Name]<br>Team member: ranpo</p>
+            </section>
+            <section>
+                <h2 class="footer-label">Data &amp; Acknowledgements</h2>
+                <div class="footer-sources">
+                    <span class="footer-source">NASA POWER</span>
+                    <span class="footer-source">UN FAO EcoCrop</span>
+                    <span class="footer-source">CGIAR Climate Action Data Hub</span>
+                    <span class="footer-source">OpenStreetMap</span>
+                    <span class="footer-source">Esri World Imagery</span>
+                </div>
+            </section>
+        </div>
+    </footer>
+    """,
+    unsafe_allow_html=True,
 )
