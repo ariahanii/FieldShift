@@ -3,7 +3,29 @@ import random
 import pandas as pd
 
 
-def score_rotation(sequence: list[str], climate_df: pd.DataFrame, crop_db: dict[str, dict]) -> dict:
+SCORE_KEYS = ("water_resilience", "heat_fit", "soil_health", "pest_break")
+DEFAULT_WEIGHTS = {key: 25.0 for key in SCORE_KEYS}
+
+
+def normalize_weights(weights: dict[str, float] | None = None) -> dict[str, float]:
+    """Return active evaluation weights normalized to percentages totaling 100."""
+    source = weights if weights is not None else DEFAULT_WEIGHTS
+    values = {key: max(float(source.get(key, 1.0)), 1.0) for key in SCORE_KEYS}
+    total = sum(values.values())
+    normalized = {
+        key: round(values[key] / total * 100.0, 1)
+        for key in SCORE_KEYS[:-1]
+    }
+    normalized[SCORE_KEYS[-1]] = round(100.0 - sum(normalized.values()), 1)
+    return normalized
+
+
+def score_rotation(
+    sequence: list[str],
+    climate_df: pd.DataFrame,
+    crop_db: dict[str, dict],
+    weights: dict[str, float] | None = None,
+) -> dict:
     """
     Evaluates a multi-season crop sequence against local NASA climate telemetry
     and FAO EcoCrop agronomic parameters.
@@ -74,7 +96,11 @@ def score_rotation(sequence: list[str], climate_df: pd.DataFrame, crop_db: dict[
         "soil_health": round(max(0.0, min(100.0, soil_score)), 1),
         "pest_break": round(max(0.0, min(100.0, diversity_score)), 1),
     }
-    scores["overall"] = round(sum(scores.values()) / 4.0, 1)
+    normalized_weights = normalize_weights(weights)
+    scores["overall"] = round(
+        sum(scores[key] * normalized_weights[key] for key in SCORE_KEYS) / 100.0,
+        1,
+    )
 
     return {
         "sequence": sequence,
@@ -87,15 +113,17 @@ def score_rotation(sequence: list[str], climate_df: pd.DataFrame, crop_db: dict[
 def generate_three_strategies(
     existing_rotation: list[str],
     climate_df: pd.DataFrame,
-    crop_db: dict[str, dict]
+    crop_db: dict[str, dict],
+    weights: dict[str, float] | None = None,
 ) -> list[dict]:
     """
     Evaluates the farmer's existing rotation and generates 2 optimized alternatives:
     1. Current Baseline Rotation
-    2. Water & Heat Resilience Strategy
-    3. Soil Health & Erosion-Control Strategy
+    2. Highest-scoring alternative for the selected priorities
+    3. Next-highest-scoring alternative
     """
-    baseline = score_rotation(existing_rotation, climate_df, crop_db)
+    normalized_weights = normalize_weights(weights)
+    baseline = score_rotation(existing_rotation, climate_df, crop_db, normalized_weights)
     baseline["strategy_name"] = "1. Current Baseline Rotation"
 
     warm_pool = [c for c, d in crop_db.items() if d["season"] in ["Warm", "Any"] and c != "Fallow"]
@@ -121,24 +149,20 @@ def generate_three_strategies(
         seq_list = list(seq)
         if seq_list == existing_rotation:
             continue
-        candidates.append(score_rotation(seq_list, climate_df, crop_db))
+        candidates.append(score_rotation(seq_list, climate_df, crop_db, normalized_weights))
 
     if not candidates:
         return [baseline]
 
-    # Strategy 2: Maximize Water Resilience + Climate/Heat Fit
-    water_champ = max(
+    ranked_candidates = sorted(
         candidates,
-        key=lambda x: (x["scores"]["water_resilience"] * 1.2 + x["scores"]["heat_fit"])
+        key=lambda candidate: candidate["scores"]["overall"],
+        reverse=True,
     )
-    water_champ["strategy_name"] = "2. Water & Heat Resilience Strategy"
+    alternatives = ranked_candidates[:2]
+    if len(alternatives) == 1:
+        alternatives.append(dict(alternatives[0]))
+    alternatives[0]["strategy_name"] = "2. Priority-Aligned Alternative"
+    alternatives[1]["strategy_name"] = "3. Next-Best Alternative"
 
-    # Strategy 3: Maximize Soil Health + Pest-Cycle Disruption (distinct from Strategy 2)
-    remaining = [c for c in candidates if c["sequence"] != water_champ["sequence"]]
-    soil_champ = max(
-        remaining or candidates,
-        key=lambda x: (x["scores"]["soil_health"] * 1.2 + x["scores"]["pest_break"])
-    )
-    soil_champ["strategy_name"] = "3. Soil Health & Erosion-Control Strategy"
-
-    return [baseline, water_champ, soil_champ]
+    return [baseline, *alternatives]
