@@ -72,7 +72,7 @@ with st.sidebar:
     years = st.slider("Time Interval (Years)", min_value=1, max_value=3, value=2)
 
     st.header("3. Select Up to 4 Crops")
-    st.caption("Choose from 2,500+ FAO EcoCrop species or type a custom crop name.")
+    st.caption("Choose from 2,500+ FAO EcoCrop species.")
     default_crops = ["Maize", "Soybean", "Winter Wheat", "Alfalfa"]
     farmer_crops = []
     for i in range(4):
@@ -82,16 +82,8 @@ with st.sidebar:
             index=(common_names.index(default_crops[i]) + 1) if default_crops[i] in common_names else 0,
             key=f"crop_choice_{i}"
         )
-        custom_override = st.text_input(
-            f"Or type custom name for Crop {i + 1}",
-            value="",
-            key=f"custom_{i}",
-            label_visibility="collapsed",
-            placeholder="Optional custom crop name..."
-        )
-        chosen = custom_override.strip() if custom_override.strip() else crop_input
-        if chosen:
-            farmer_crops.append(chosen)
+        if crop_input:
+            farmer_crops.append(crop_input)
 
     st.header("4. Existing Seasonal Sequence")
     slot_options = list(dict.fromkeys(farmer_crops + ["Fallow"]))
@@ -180,7 +172,7 @@ dynamic_crop_db = get_climate_compatible_candidates(climate_df, ecocrop_df, limi
 resolved_profiles = []
 for c in set(farmer_crops + existing_sequence):
     prof = get_crop_profile_from_ecocrop(c, ecocrop_df)
-    dynamic_crop_db[prof["name"]] = prof
+    dynamic_crop_db[c] = prof
     resolved_profiles.append(prof)
 
 strategies = generate_three_strategies(existing_sequence, climate_df, dynamic_crop_db)
