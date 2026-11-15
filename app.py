@@ -8,13 +8,16 @@ from data_fetcher import (
     get_all_common_crop_names,
     get_crop_profile_from_ecocrop,
     get_climate_compatible_candidates,
-    fetch_nasa_climate_profile,
+    NASA_CLIMATE_START_YEAR,
+    NASA_CLIMATE_END_YEAR,
+    aggregate_nasa_climate_profile,
+    fetch_nasa_climate_data,
 )
 from optimizer import SCORE_KEYS, generate_three_strategies
 
 st.set_page_config(page_title="NASA Crop Rotation Advisor", layout="wide")
 st.title("🛰️ Satellite-Guided Crop Rotation Decision Support")
-st.caption("Combining 10-Year NASA POWER Climate & Soil Moisture Telemetry with UN FAO EcoCrop Agronomic Data")
+st.caption("Combining NASA POWER climate and soil moisture telemetry with UN FAO EcoCrop agronomic data")
 
 PRIORITY_LABELS = {
     "water_resilience": "Water conservation (%)",
@@ -111,9 +114,14 @@ def load_cached_ecocrop():
     return df, names
 
 
-@st.cache_data(show_spinner="Fetching 10-year NASA POWER satellite telemetry...")
-def load_cached_nasa(lat: float, lon: float):
-    return fetch_nasa_climate_profile(lat, lon)
+@st.cache_data(show_spinner="Fetching NASA POWER historical climate data...")
+def load_cached_nasa_history(lat: float, lon: float):
+    return fetch_nasa_climate_data(
+        lat,
+        lon,
+        start_year=NASA_CLIMATE_START_YEAR,
+        end_year=NASA_CLIMATE_END_YEAR,
+    )
 
 
 ecocrop_df, common_names = load_cached_ecocrop()
@@ -122,6 +130,14 @@ ecocrop_df, common_names = load_cached_ecocrop()
 with st.sidebar:
     st.header("1. Rotation Horizon")
     years = st.slider("Time Interval (Years)", min_value=1, max_value=3, value=2)
+    climate_averaging_years = st.slider(
+        "Historical Climate Averaging Period (Years)",
+        min_value=3,
+        max_value=10,
+        value=10,
+        format="%d years",
+    )
+    st.caption("Number of historical years used to calculate average climate conditions.")
 
     st.header("2. Select Up to 4 Crops")
     st.caption("Choose from 2,500+ FAO EcoCrop species.")
@@ -154,6 +170,8 @@ with st.sidebar:
             key=f"seq_slot_{s}"
         )
         existing_sequence.append(sel)
+
+climate_start_year = NASA_CLIMATE_END_YEAR - climate_averaging_years + 1
 
 # --- INTERACTIVE MAP PICKER ---
 st.subheader("📍 Step 1: Choose Your Field Location")
@@ -218,7 +236,20 @@ with info_col:
     st.caption("💡 Switch the map to Satellite View to identify your field.")
 
 # --- FETCH TELEMETRY & RESOLVE CROPS ---
-climate_df = load_cached_nasa(st.session_state.lat, st.session_state.lon)
+climate_history = load_cached_nasa_history(st.session_state.lat, st.session_state.lon)
+try:
+    climate_df = aggregate_nasa_climate_profile(
+        climate_history,
+        start_year=climate_start_year,
+        end_year=NASA_CLIMATE_END_YEAR,
+    )
+except ValueError as exc:
+    st.error(
+        f"Unable to calculate the requested {climate_averaging_years}-year climate average "
+        f"({climate_start_year}-{NASA_CLIMATE_END_YEAR}): {exc}"
+    )
+    st.stop()
+
 dynamic_crop_db = get_climate_compatible_candidates(climate_df, ecocrop_df, limit=12)
 
 resolved_profiles = []
@@ -235,10 +266,14 @@ peak_heat = climate_df["temp_max"].max()
 summer_sm = climate_df[climate_df["month"].isin([6, 7, 8])]["soil_moisture"].mean()
 
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("Annual Precipitation", f"{annual_rain:.0f} mm")
-m2.metric("Peak Summer Max Temp", f"{peak_heat:.1f} °C")
+m1.metric("Mean Annual Precipitation", f"{annual_rain:.0f} mm")
+m2.metric("Peak Monthly Max Temp", f"{peak_heat:.1f} °C")
 m3.metric("Summer Root-Zone Moisture", f"{summer_sm:.2f} (0–1)")
-m4.metric("10-Yr Water Storage Trend", water_trend)
+m4.metric(f"{climate_averaging_years}-Yr Water Storage Trend", water_trend)
+st.caption(
+    f"Climate averages use complete monthly observations from January {climate_start_year} "
+    f"through December {NASA_CLIMATE_END_YEAR} ({climate_averaging_years} years)."
+)
 
 # --- FARMER PRIORITIES ---
 st.selectbox(
@@ -296,19 +331,23 @@ for col, strat in zip(cols, strategies):
 
 # --- SUPPORTING CLIMATE & CROP DATA ---
 st.markdown("#### Explore supporting data")
-with st.expander("📈 View 10-Year NASA Climate, Moisture & Stress Curves", expanded=True):
+with st.expander(
+    f"📈 View {climate_averaging_years}-Year NASA Climate, Moisture & Stress Curves "
+    f"({climate_start_year}–{NASA_CLIMATE_END_YEAR})",
+    expanded=True,
+):
     c1, c2 = st.columns(2)
     with c1:
         fig_temp = px.line(
             climate_df, x="month", y=["temp_max", "temp_avg", "temp_min"],
-            title="Monthly Temperature Envelope (°C)",
+            title=f"Average Monthly Temperature Envelope ({climate_start_year}–{NASA_CLIMATE_END_YEAR}; °C)",
             labels={"value": "Temperature (°C)", "month": "Month"}
         )
         st.plotly_chart(fig_temp, use_container_width=True)
     with c2:
         fig_water = px.bar(
             climate_df, x="month", y="precip_mm",
-            title="Monthly Precipitation (mm) & Water Balance",
+            title=f"Average Monthly Precipitation (mm) & Water Balance ({climate_start_year}–{NASA_CLIMATE_END_YEAR})",
             labels={"precip_mm": "Precipitation (mm)", "month": "Month"}
         )
         st.plotly_chart(fig_water, use_container_width=True)

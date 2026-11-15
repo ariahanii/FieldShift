@@ -224,14 +224,42 @@ def get_climate_compatible_candidates(
 # 2. NASA POWER TELEMETRY FETCHER
 # =====================================================================
  
-def fetch_nasa_climate_profile(lat: float, lon: float, start_year: int = 2015, end_year: int = 2024) -> pd.DataFrame:
-    """
-    Fetches 10-year monthly agricultural climate & root-zone soil moisture data
-    from NASA POWER and computes seasonal stress indicators.
-    """
+NASA_CLIMATE_START_YEAR = 2015
+NASA_CLIMATE_END_YEAR = 2024
+
+NASA_CLIMATE_PARAMETERS = {
+    "T2M": "temp_avg",
+    "T2M_MAX": "temp_max",
+    "T2M_MIN": "temp_min",
+    "PRECTOTCORR": "precip_mm",
+    "GWETROOT": "soil_moisture",
+    "EVPTRNS": "evapotrans",
+}
+
+
+def _parse_power_value(value) -> float:
+    if value is None:
+        return np.nan
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return np.nan
+    return np.nan if not np.isfinite(parsed) or parsed == -999 else parsed
+
+
+def fetch_nasa_climate_data(
+    lat: float,
+    lon: float,
+    start_year: int = NASA_CLIMATE_START_YEAR,
+    end_year: int = NASA_CLIMATE_END_YEAR,
+) -> pd.DataFrame:
+    """Fetch raw monthly NASA POWER observations for the requested year range."""
+    if start_year > end_year:
+        raise ValueError("The climate data start year must not exceed the end year.")
+
     url = "https://power.larc.nasa.gov/api/temporal/monthly/point"
     params = {
-        "parameters": "T2M,T2M_MAX,T2M_MIN,PRECTOTCORR,GWETROOT,EVPTRNS",
+        "parameters": ",".join(NASA_CLIMATE_PARAMETERS),
         "community": "AG",
         "longitude": lon,
         "latitude": lat,
@@ -242,27 +270,89 @@ def fetch_nasa_climate_profile(lat: float, lon: float, start_year: int = 2015, e
  
     resp = requests.get(url, params=params, timeout=20)
     resp.raise_for_status()
-    data = resp.json()["properties"]["parameter"]
+    response_data = resp.json()
+    properties = response_data.get("properties") if isinstance(response_data, dict) else None
+    parameter_data = properties.get("parameter") if isinstance(properties, dict) else None
+    if not isinstance(parameter_data, dict):
+        raise ValueError("NASA POWER response did not contain climate parameter data.")
  
     records = []
-    for ym, temp in data["T2M"].items():
-        month = int(ym[4:])
-        if month > 12 or temp == -999:
-            continue
-        records.append({
-            "year": int(ym[:4]),
-            "month": month,
-            "temp_avg": temp,
-            "temp_max": data["T2M_MAX"][ym],
-            "temp_min": data["T2M_MIN"][ym],
-            "precip_mm": data["PRECTOTCORR"][ym] * 30.4,
-            "soil_moisture": data["GWETROOT"][ym],
-            "evapotrans": data["EVPTRNS"][ym]
-        })
- 
-    df = pd.DataFrame(records)
- 
-    monthly = df.groupby("month").agg(
+    for year in range(start_year, end_year + 1):
+        for month in range(1, 13):
+            year_month = f"{year}{month:02d}"
+            record = {"year": year, "month": month}
+            for parameter, column in NASA_CLIMATE_PARAMETERS.items():
+                values = parameter_data.get(parameter, {})
+                value = _parse_power_value(values.get(year_month)) if isinstance(values, dict) else np.nan
+                if column == "precip_mm" and pd.notna(value):
+                    value *= 30.4
+                record[column] = value
+            records.append(record)
+
+    return pd.DataFrame(records)
+
+
+def aggregate_nasa_climate_profile(
+    climate_data: pd.DataFrame,
+    start_year: int,
+    end_year: int,
+) -> pd.DataFrame:
+    """Average complete monthly climate observations and derive stress indicators."""
+    if start_year > end_year:
+        raise ValueError("The climate data start year must not exceed the end year.")
+
+    required_columns = list(NASA_CLIMATE_PARAMETERS.values())
+    missing_columns = sorted(set(required_columns) - set(climate_data.columns))
+    if missing_columns:
+        raise ValueError(
+            "Climate data is missing required variables: " + ", ".join(missing_columns)
+        )
+
+    selected = climate_data[
+        climate_data["year"].between(start_year, end_year)
+    ].copy()
+    if selected.duplicated(["year", "month"]).any():
+        raise ValueError(
+            f"Climate data contains duplicate monthly observations for {start_year}-{end_year}."
+        )
+
+    expected_months = {
+        (year, month)
+        for year in range(start_year, end_year + 1)
+        for month in range(1, 13)
+    }
+    available_months = set(zip(selected["year"], selected["month"]))
+    missing_months = sorted(expected_months - available_months)
+    problems = []
+    if missing_months:
+        listed_months = ", ".join(
+            f"{year}-{month:02d}" for year, month in missing_months[:6]
+        )
+        if len(missing_months) > 6:
+            listed_months += ", ..."
+        problems.append(f"missing monthly observations: {listed_months}")
+
+    for column in required_columns:
+        values = pd.to_numeric(selected[column], errors="coerce")
+        invalid_mask = ~np.isfinite(values.to_numpy(dtype=float))
+        invalid_months = selected.loc[invalid_mask, ["year", "month"]]
+        if not invalid_months.empty:
+            listed_months = ", ".join(
+                f"{int(row.year)}-{int(row.month):02d}"
+                for row in invalid_months.head(6).itertuples(index=False)
+            )
+            if len(invalid_months) > 6:
+                listed_months += ", ..."
+            problems.append(f"{column} unavailable for {listed_months}")
+        selected[column] = values
+
+    if problems:
+        details = "; ".join(problems)
+        raise ValueError(
+            f"Incomplete NASA POWER climate data for {start_year}-{end_year}: {details}."
+        )
+
+    monthly = selected.groupby("month").agg(
         temp_avg=("temp_avg", "mean"),
         temp_max=("temp_max", "mean"),
         temp_min=("temp_min", "mean"),
@@ -277,10 +367,23 @@ def fetch_nasa_climate_profile(lat: float, lon: float, start_year: int = 2015, e
     monthly["water_balance"] = monthly["precip_mm"] - (monthly["evapotrans"] * 30.4)
     monthly["veg_stress_index"] = np.clip((1.0 - monthly["soil_moisture"]) * monthly["heat_stress_risk"], 0, 1)
  
-    # 10-year root-zone moisture trend
-    annual_sm = df.groupby("year")["soil_moisture"].mean()
+    annual_sm = selected.groupby("year")["soil_moisture"].mean()
     slope = np.polyfit(annual_sm.index, annual_sm.values, 1)[0]
     monthly["long_term_water_trend"] = "declining" if slope < -0.002 else "stable"
  
     return monthly
+
+
+def fetch_nasa_climate_profile(
+    lat: float,
+    lon: float,
+    start_year: int = NASA_CLIMATE_START_YEAR,
+    end_year: int = NASA_CLIMATE_END_YEAR,
+) -> pd.DataFrame:
+    """
+    Fetches monthly NASA POWER climate data and computes period-specific averages
+    and seasonal stress indicators.
+    """
+    climate_data = fetch_nasa_climate_data(lat, lon, start_year, end_year)
+    return aggregate_nasa_climate_profile(climate_data, start_year, end_year)
  
