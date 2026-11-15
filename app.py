@@ -405,7 +405,7 @@ st.markdown(
             <section>
                 <h2 class="footer-label">Project</h2>
                 <p class="footer-project-name">FieldShift</p>
-                <p class="footer-credit">Developed by Team Ranpo<br>Team member: ranpo</p>
+                <p class="footer-credit">Developed by Team Ranpo<br></p>
             </section>
             <section>
                 <h2 class="footer-label">Data &amp; Acknowledgements</h2>
