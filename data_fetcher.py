@@ -1,10 +1,15 @@
 import os
+import re
 import requests
 import pandas as pd
 import numpy as np
 
 ECOCROP_PARQUET_URL = "https://digital-atlas.s3.amazonaws.com/cdh/data/ecocrop/ecocrop.parquet"
 LOCAL_ECOCROP_CACHE = "ecocrop_2568.parquet"
+
+# Valid crop name: letters only (accents allowed), words separated by a single
+# space, hyphen or apostrophe. No digits, brackets, slashes, commas, symbols.
+_VALID_CROP_NAME = re.compile(r"[^\W\d_]+(?:[ '\-][^\W\d_]+)*")
 
 
 # =====================================================================
@@ -33,19 +38,38 @@ def _flatten_list_field(val) -> str:
     return str(val).strip()
 
 
+def _format_crop_name(name: str) -> str:
+    """Capitalizes each word without the str.title() apostrophe bug ("Farmer'S")."""
+    words = str(name).strip().split(" ")
+    return " ".join(w[:1].upper() + w[1:].lower() for w in words if w)
+
+
+def _is_valid_crop_name(name: str) -> bool:
+    """True only for real-looking crop names (3-30 chars, letters/space/-/')."""
+    name = name.strip()
+    return 2 < len(name) <= 30 and _VALID_CROP_NAME.fullmatch(name) is not None
+
+
+def _valid_common_names(val) -> list[str]:
+    """Returns the cleaned, formatted, valid common names from a comname cell."""
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        return []
+    items = val if isinstance(val, (list, np.ndarray)) else [val]
+    result = []
+    for item in items:
+        if item is None:
+            continue
+        raw = str(item).strip()
+        if _is_valid_crop_name(raw):
+            result.append(_format_crop_name(raw))
+    return result
+
+
 def get_all_common_crop_names(ecocrop_df: pd.DataFrame) -> list[str]:
-    """Extracts a clean, sorted list of common crop names for UI autocomplete."""
+    """Extracts a clean, sorted list of real common crop names for UI autocomplete."""
     names = set()
     for val in ecocrop_df["comname"].dropna():
-        if isinstance(val, (list, np.ndarray)):
-            for item in val:
-                clean = str(item).strip().title()
-                if 2 < len(clean) <= 30:
-                    names.add(clean)
-        else:
-            clean = str(val).strip().title()
-            if 2 < len(clean) <= 30:
-                names.add(clean)
+        names.update(_valid_common_names(val))
     return sorted(names)
 
 
@@ -80,14 +104,14 @@ def get_crop_profile_from_ecocrop(crop_query: str, ecocrop_df: pd.DataFrame) -> 
         ecocrop_df["scientificname"].fillna("").str.lower()
     )
 
-    matches = ecocrop_df[search_series.str.contains(rf"\b{q}\b", regex=True, na=False)]
+    matches = ecocrop_df[search_series.str.contains(rf"\b{re.escape(q)}\b", regex=True, na=False)]
     if matches.empty:
         matches = ecocrop_df[search_series.str.contains(q, regex=False, na=False)]
 
     # Safe fallback if user enters a custom/local crop name not in EcoCrop
     if matches.empty:
         return {
-            "name": crop_query.strip().title(),
+            "name": _format_crop_name(crop_query),
             "scientific_name": "Unmatched / Local Cultivar",
             "family": "Unknown",
             "season": "Warm",
@@ -132,7 +156,7 @@ def get_crop_profile_from_ecocrop(crop_query: str, ecocrop_df: pd.DataFrame) -> 
     is_legume = any(leg in family.lower() for leg in ["fabaceae", "leguminosae"])
 
     return {
-        "name": crop_query.strip().title(),
+        "name": _format_crop_name(crop_query),
         "ecoport_code": int(row["ecoportcode"]) if pd.notna(row["ecoportcode"]) else None,
         "scientific_name": str(row["scientificname"]),
         "family": family,
@@ -183,11 +207,11 @@ def get_climate_compatible_candidates(
     for _, row in valid.head(limit * 4).iterrows():
         if len(candidates) >= limit:
             break
-        common_names = row["comname"]
-        primary_name = common_names[0] if isinstance(common_names, (list, np.ndarray)) and len(common_names) > 0 else str(common_names)
-        if not primary_name or len(primary_name) > 22:
+        # Use the first *valid* common name (skips junk entries with symbols/digits)
+        names = [n for n in _valid_common_names(row["comname"]) if len(n) <= 22]
+        if not names:
             continue
-        profile = get_crop_profile_from_ecocrop(primary_name, ecocrop_df)
+        profile = get_crop_profile_from_ecocrop(names[0], ecocrop_df)
         if profile["name"] not in candidates:
             candidates[profile["name"]] = profile
 

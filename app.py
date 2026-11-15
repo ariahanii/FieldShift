@@ -122,19 +122,10 @@ ecocrop_df, common_names = load_cached_ecocrop()
 
 # --- SIDEBAR: ROTATION & CROP INPUTS ---
 with st.sidebar:
-    st.header("1. Quick Demo Regions")
-    col_p1, col_p2 = st.columns(2)
-    if col_p1.button("🇮🇹 Po Valley"):
-        set_location(45.4642, 9.1900)
-        st.rerun()
-    if col_p2.button("🇺🇸 Iowa Corn Belt"):
-        set_location(41.8781, -93.0977)
-        st.rerun()
-
-    st.header("2. Rotation Horizon")
+    st.header("1. Rotation Horizon")
     years = st.slider("Time Interval (Years)", min_value=1, max_value=3, value=2)
 
-    st.header("3. Select Up to 4 Crops")
+    st.header("2. Select Up to 4 Crops")
     st.caption("Choose from 2,500+ FAO EcoCrop species.")
     default_crops = ["Maize", "Soybean", "Winter Wheat", "Alfalfa"]
     farmer_crops = []
@@ -148,7 +139,7 @@ with st.sidebar:
         if crop_input:
             farmer_crops.append(crop_input)
 
-    st.header("4. Existing Seasonal Sequence")
+    st.header("3. Existing Seasonal Sequence")
     slot_options = list(dict.fromkeys(farmer_crops + ["Fallow"]))
     existing_sequence = []
     for s in range(years * 2):
