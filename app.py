@@ -8,13 +8,16 @@ from data_fetcher import (
     get_all_common_crop_names,
     get_crop_profile_from_ecocrop,
     get_climate_compatible_candidates,
-    fetch_nasa_climate_profile,
+    NASA_CLIMATE_START_YEAR,
+    NASA_CLIMATE_END_YEAR,
+    aggregate_nasa_climate_profile,
+    fetch_nasa_climate_data,
 )
-from optimizer import SCORE_KEYS, generate_three_strategies, normalize_weights
+from optimizer import SCORE_KEYS, generate_three_strategies
 
 st.set_page_config(page_title="NASA Crop Rotation Advisor", layout="wide")
 st.title("🛰️ Satellite-Guided Crop Rotation Decision Support")
-st.caption("Combining 10-Year NASA POWER Climate & Soil Moisture Telemetry with UN FAO EcoCrop Agronomic Data")
+st.caption("Combining NASA POWER climate and soil moisture telemetry with UN FAO EcoCrop agronomic data")
 
 PRIORITY_LABELS = {
     "water_resilience": "Water conservation (%)",
@@ -60,15 +63,13 @@ def apply_priority_preset():
             st.session_state[f"priority_weight_{key}"] = weights[key]
 
 
-def normalize_custom_priority_weights():
-    weights = normalize_weights({
+def update_custom_priority_weights():
+    weights = {
         key: st.session_state[f"priority_weight_{key}"]
         for key in SCORE_KEYS
-    })
+    }
     st.session_state.priority_weights = weights
     st.session_state.priority_preset = CUSTOM_PRIORITY
-    for key in SCORE_KEYS:
-        st.session_state[f"priority_weight_{key}"] = weights[key]
 
 
 # Initialize persistent coordinates in session state (Default: Po Valley, Italy)
@@ -113,28 +114,32 @@ def load_cached_ecocrop():
     return df, names
 
 
-@st.cache_data(show_spinner="Fetching 10-year NASA POWER satellite telemetry...")
-def load_cached_nasa(lat: float, lon: float):
-    return fetch_nasa_climate_profile(lat, lon)
+@st.cache_data(show_spinner="Fetching NASA POWER historical climate data...")
+def load_cached_nasa_history(lat: float, lon: float):
+    return fetch_nasa_climate_data(
+        lat,
+        lon,
+        start_year=NASA_CLIMATE_START_YEAR,
+        end_year=NASA_CLIMATE_END_YEAR,
+    )
 
 
 ecocrop_df, common_names = load_cached_ecocrop()
 
 # --- SIDEBAR: ROTATION & CROP INPUTS ---
 with st.sidebar:
-    st.header("1. Quick Demo Regions")
-    col_p1, col_p2 = st.columns(2)
-    if col_p1.button("🇮🇹 Po Valley"):
-        set_location(45.4642, 9.1900)
-        st.rerun()
-    if col_p2.button("🇺🇸 Iowa Corn Belt"):
-        set_location(41.8781, -93.0977)
-        st.rerun()
-
-    st.header("2. Rotation Horizon")
+    st.header("1. Rotation Horizon")
     years = st.slider("Time Interval (Years)", min_value=1, max_value=3, value=2)
+    climate_averaging_years = st.slider(
+        "Historical Climate Averaging Period (Years)",
+        min_value=3,
+        max_value=10,
+        value=10,
+        format="%d years",
+    )
+    st.caption("Number of historical years used to calculate average climate conditions.")
 
-    st.header("3. Select Up to 4 Crops")
+    st.header("2. Select Up to 4 Crops")
     st.caption("Choose from 2,500+ FAO EcoCrop species.")
     default_crops = ["Maize", "Soybean", "Winter Wheat", "Alfalfa"]
     farmer_crops = []
@@ -148,7 +153,7 @@ with st.sidebar:
         if crop_input:
             farmer_crops.append(crop_input)
 
-    st.header("4. Existing Seasonal Sequence")
+    st.header("3. Existing Seasonal Sequence")
     slot_options = list(dict.fromkeys(farmer_crops + ["Fallow"]))
     existing_sequence = []
     for s in range(years * 2):
@@ -165,6 +170,8 @@ with st.sidebar:
             key=f"seq_slot_{s}"
         )
         existing_sequence.append(sel)
+
+climate_start_year = NASA_CLIMATE_END_YEAR - climate_averaging_years + 1
 
 # --- INTERACTIVE MAP PICKER ---
 st.subheader("📍 Step 1: Choose Your Field Location")
@@ -229,7 +236,20 @@ with info_col:
     st.caption("💡 Switch the map to Satellite View to identify your field.")
 
 # --- FETCH TELEMETRY & RESOLVE CROPS ---
-climate_df = load_cached_nasa(st.session_state.lat, st.session_state.lon)
+climate_history = load_cached_nasa_history(st.session_state.lat, st.session_state.lon)
+try:
+    climate_df = aggregate_nasa_climate_profile(
+        climate_history,
+        start_year=climate_start_year,
+        end_year=NASA_CLIMATE_END_YEAR,
+    )
+except ValueError as exc:
+    st.error(
+        f"Unable to calculate the requested {climate_averaging_years}-year climate average "
+        f"({climate_start_year}-{NASA_CLIMATE_END_YEAR}): {exc}"
+    )
+    st.stop()
+
 dynamic_crop_db = get_climate_compatible_candidates(climate_df, ecocrop_df, limit=12)
 
 resolved_profiles = []
@@ -246,37 +266,14 @@ peak_heat = climate_df["temp_max"].max()
 summer_sm = climate_df[climate_df["month"].isin([6, 7, 8])]["soil_moisture"].mean()
 
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("Annual Precipitation", f"{annual_rain:.0f} mm")
-m2.metric("Peak Summer Max Temp", f"{peak_heat:.1f} °C")
+m1.metric("Mean Annual Precipitation", f"{annual_rain:.0f} mm")
+m2.metric("Peak Monthly Max Temp", f"{peak_heat:.1f} °C")
 m3.metric("Summer Root-Zone Moisture", f"{summer_sm:.2f} (0–1)")
-m4.metric("10-Yr Water Storage Trend", water_trend)
-
-# --- TELEMETRY CHARTS ---
-with st.expander("📈 View 10-Year NASA Climate, Moisture & Stress Curves", expanded=True):
-    c1, c2 = st.columns(2)
-    with c1:
-        fig_temp = px.line(
-            climate_df, x="month", y=["temp_max", "temp_avg", "temp_min"],
-            title="Monthly Temperature Envelope (°C)",
-            labels={"value": "Temperature (°C)", "month": "Month"}
-        )
-        st.plotly_chart(fig_temp, use_container_width=True)
-    with c2:
-        fig_water = px.bar(
-            climate_df, x="month", y="precip_mm",
-            title="Monthly Precipitation (mm) & Water Balance",
-            labels={"precip_mm": "Precipitation (mm)", "month": "Month"}
-        )
-        st.plotly_chart(fig_water, use_container_width=True)
-
-# --- RESOLVED ECOCROP PARAMETERS TABLE ---
-with st.expander("🌿 Resolved Crop Agronomic Profiles (FAO EcoCrop Lookup)", expanded=False):
-    st.dataframe(
-        pd.DataFrame(resolved_profiles)[
-            ["name", "scientific_name", "family", "season", "ripening_days", "cycle_water_need_mm", "heat_tolerance_c", "frost_hardy", "source"]
-        ],
-        use_container_width=True
-    )
+m4.metric(f"{climate_averaging_years}-Yr Water Storage Trend", water_trend)
+st.caption(
+    f"Climate averages use complete monthly observations from January {climate_start_year} "
+    f"through December {NASA_CLIMATE_END_YEAR} ({climate_averaging_years} years)."
+)
 
 # --- FARMER PRIORITIES ---
 st.selectbox(
@@ -292,14 +289,14 @@ with st.expander("Customize", expanded=False):
         with weight_cols[index % 2]:
             st.number_input(
                 PRIORITY_LABELS[key],
-                min_value=1.0,
+                min_value=0.0,
                 max_value=100.0,
                 step=0.1,
                 format="%.1f",
                 key=f"priority_weight_{key}",
-                on_change=normalize_custom_priority_weights,
+                on_change=update_custom_priority_weights,
             )
-    st.caption("Weights are normalized to 100%; every criterion stays active.")
+    st.caption("Values are normalized only when calculating scores. A value of 0 excludes that criterion.")
 
 strategies = generate_three_strategies(
     existing_sequence,
@@ -332,8 +329,135 @@ for col, strat in zip(cols, strategies):
         st.success("**Satellite & Agronomic Evidence:**\n" + "\n".join(f"- {e}" for e in strat["evidence"]))
         st.warning("**Local Review & Risk Flags:**\n" + "\n".join(f"- {r}" for r in strat["risks"]))
 
-st.info(
-    "ℹ️ **Human-in-the-Loop Guidance:** Satellite telemetry captures regional climate and moisture patterns, "
-    "while FAO EcoCrop provides species-level thresholds. Always review soil pH, sub-surface drainage, "
-    "equipment compatibility, and local market demand with an agronomist before planting."
+# --- SUPPORTING CLIMATE & CROP DATA ---
+st.markdown("#### Explore supporting data")
+with st.expander(
+    f"📈 View {climate_averaging_years}-Year NASA Climate, Moisture & Stress Curves "
+    f"({climate_start_year}–{NASA_CLIMATE_END_YEAR})",
+    expanded=True,
+):
+    c1, c2 = st.columns(2)
+    with c1:
+        fig_temp = px.line(
+            climate_df, x="month", y=["temp_max", "temp_avg", "temp_min"],
+            title=f"Average Monthly Temperature Envelope ({climate_start_year}–{NASA_CLIMATE_END_YEAR}; °C)",
+            labels={"value": "Temperature (°C)", "month": "Month"}
+        )
+        st.plotly_chart(fig_temp, use_container_width=True)
+    with c2:
+        fig_water = px.bar(
+            climate_df, x="month", y="precip_mm",
+            title=f"Average Monthly Precipitation (mm) & Water Balance ({climate_start_year}–{NASA_CLIMATE_END_YEAR})",
+            labels={"precip_mm": "Precipitation (mm)", "month": "Month"}
+        )
+        st.plotly_chart(fig_water, use_container_width=True)
+
+with st.expander("🌿 Resolved Crop Agronomic Profiles (FAO EcoCrop Lookup)", expanded=False):
+    st.dataframe(
+        pd.DataFrame(resolved_profiles)[
+            ["name", "scientific_name", "family", "season", "ripening_days", "cycle_water_need_mm", "heat_tolerance_c", "frost_hardy", "source"]
+        ],
+        use_container_width=True
+    )
+
+st.markdown(
+    """
+    <style>
+    .fieldshift-footer {
+        margin-top: 1.1rem;
+        padding-top: 0.9rem;
+        border-top: 1px solid rgba(128, 128, 128, 0.28);
+        color: var(--text-color);
+    }
+    .fieldshift-footer .footer-disclaimer {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.55rem;
+        padding: 0.65rem 0.8rem;
+        border-radius: 0.35rem;
+        background: var(--secondary-background-color);
+        font-size: 0.8rem;
+        line-height: 1.5;
+        opacity: 0.88;
+    }
+    .fieldshift-footer .footer-info-icon {
+        flex: 0 0 auto;
+        opacity: 0.7;
+    }
+    .fieldshift-footer .footer-disclaimer p,
+    .fieldshift-footer .footer-project-name,
+    .fieldshift-footer .footer-credit {
+        margin: 0;
+    }
+    .fieldshift-footer .footer-columns {
+        display: grid;
+        grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.5fr);
+        gap: 1.5rem;
+        margin-top: 0.95rem;
+    }
+    .fieldshift-footer .footer-label {
+        margin: 0 0 0.35rem;
+        font-size: 0.68rem;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        opacity: 0.62;
+    }
+    .fieldshift-footer .footer-project-name {
+        margin-bottom: 0.2rem;
+        font-size: 0.9rem;
+        font-weight: 600;
+    }
+    .fieldshift-footer .footer-credit {
+        font-size: 0.76rem;
+        line-height: 1.45;
+        opacity: 0.72;
+    }
+    .fieldshift-footer .footer-sources {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem 0.45rem;
+    }
+    .fieldshift-footer .footer-source {
+        padding: 0.16rem 0.45rem;
+        border-radius: 0.25rem;
+        background: var(--secondary-background-color);
+        font-size: 0.72rem;
+        line-height: 1.4;
+        opacity: 0.78;
+    }
+    @media (max-width: 640px) {
+        .fieldshift-footer .footer-columns {
+            grid-template-columns: minmax(0, 1fr);
+            gap: 0.8rem;
+        }
+    }
+    </style>
+    <footer class="fieldshift-footer" aria-label="FieldShift disclaimer and credits">
+        <div class="footer-disclaimer">
+            <span class="footer-info-icon" aria-hidden="true">&#9432;</span>
+            <p>FieldShift provides informational decision support, not definitive agricultural recommendations.
+            Its outputs should always be evaluated alongside local conditions and farming practices.
+            Farmers' knowledge, experience, and understanding of their land take priority over the tool's suggestions.</p>
+        </div>
+        <div class="footer-columns">
+            <section>
+                <h2 class="footer-label">Project</h2>
+                <p class="footer-project-name">FieldShift</p>
+                <p class="footer-credit">Developed by Team Ranpo<br></p>
+            </section>
+            <section>
+                <h2 class="footer-label">Data &amp; Acknowledgements</h2>
+                <div class="footer-sources">
+                    <span class="footer-source">NASA POWER</span>
+                    <span class="footer-source">UN FAO EcoCrop</span>
+                    <span class="footer-source">CGIAR Climate Action Data Hub</span>
+                    <span class="footer-source">OpenStreetMap</span>
+                    <span class="footer-source">Esri World Imagery</span>
+                </div>
+            </section>
+        </div>
+    </footer>
+    """,
+    unsafe_allow_html=True,
 )
